@@ -51,6 +51,9 @@ COINGECKO_IDS = {
     "VETUSDT":  "vechain",
 }
 
+# Coins không có trên CoinGecko free → dùng Binance API
+BINANCE_ONLY = {"HYPEUSDT"}
+
 REPORT_COINS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT",
     "XRPUSDT", "DOGEUSDT", "HYPEUSDT"
@@ -108,6 +111,21 @@ def safe_json(res):
         print(f"⚠️ JSON parse error: {e} | body: {res.text[:100]}")
         return None
 
+def get_price_binance(symbol):
+    """Lấy giá từ Binance public API (không cần key)."""
+    try:
+        url  = "https://api.binance.com/api/v3/ticker/24hr"
+        res  = requests.get(url, params={"symbol": symbol.upper()}, timeout=8)
+        data = safe_json(res)
+        if not data or "lastPrice" not in data:
+            return None, None
+        price  = float(data["lastPrice"])
+        change = float(data.get("priceChangePercent", 0))
+        return price, change
+    except Exception as e:
+        print(f"⚠️ Binance API error ({symbol}): {e}")
+        return None, None
+
 def get_coin_data(symbol):
     cg_id = COINGECKO_IDS.get(symbol.upper())
     if not cg_id:
@@ -118,6 +136,9 @@ def get_coin_data(symbol):
     return safe_json(res)
 
 def get_price(symbol):
+    if symbol.upper() in BINANCE_ONLY:
+        price, _ = get_price_binance(symbol)
+        return price
     cg_id = COINGECKO_IDS.get(symbol.upper())
     if not cg_id:
         return None
@@ -130,9 +151,20 @@ def get_price(symbol):
     return float(data[cg_id]["usd"]) if cg_id in data else None
 
 def get_prices_batch(symbols):
-    ids = [COINGECKO_IDS[s] for s in symbols if s in COINGECKO_IDS]
+    result = {}
+
+    # Lấy coins Binance-only trước
+    for sym in symbols:
+        if sym in BINANCE_ONLY:
+            price, change = get_price_binance(sym)
+            if price is not None:
+                result[sym] = {"price": price, "change": change}
+
+    # Lấy phần còn lại từ CoinGecko
+    cg_symbols = [s for s in symbols if s not in BINANCE_ONLY]
+    ids = [COINGECKO_IDS[s] for s in cg_symbols if s in COINGECKO_IDS]
     if not ids:
-        return {}
+        return result
     url    = "https://api.coingecko.com/api/v3/simple/price"
     params = {
         "ids": ",".join(ids),
@@ -144,9 +176,8 @@ def get_prices_batch(symbols):
     res  = requests.get(url, params=params, timeout=10)
     data = safe_json(res)
     if not data:
-        return {}
-    result = {}
-    for sym in symbols:
+        return result
+    for sym in cg_symbols:
         cg_id = COINGECKO_IDS.get(sym)
         if cg_id and cg_id in data:
             result[sym] = {
@@ -187,30 +218,38 @@ def resolve_symbol(text):
 # ── Gửi giá 1 coin ─────────────────────────────────────────────
 def send_price_info(chat_id, symbol):
     try:
-        cg_id = COINGECKO_IDS.get(symbol.upper())
-        if not cg_id:
-            send(chat_id, f"❌ Không hỗ trợ symbol <b>{symbol}</b>")
-            return
-        url    = "https://api.coingecko.com/api/v3/simple/price"
-        params = {
-            "ids": cg_id,
-            "vs_currencies": "usd",
-            "include_24hr_change": "true",
-            "include_24hr_high": "true",
-            "include_24hr_low": "true",
-        }
-        res    = requests.get(url, params=params, timeout=8)
-        raw    = safe_json(res)
-        if not raw or cg_id not in raw:
-            send(chat_id, f"❌ Lỗi lấy dữ liệu <b>{symbol}</b>: API không phản hồi (có thể bị rate-limit, thử lại sau 30s)")
-            return
-        data   = raw[cg_id]
-        price  = float(data["usd"])
-        change = float(data.get("usd_24h_change", 0))
-        emoji  = "📈" if change >= 0 else "📉"
-        sign   = "+" if change >= 0 else ""
-        name   = symbol.replace("USDT", "")
-        link   = chart_link(symbol)
+        name = symbol.replace("USDT", "")
+        link = chart_link(symbol)
+
+        if symbol.upper() in BINANCE_ONLY:
+            price, change = get_price_binance(symbol)
+            if price is None:
+                send(chat_id, f"❌ Lỗi lấy dữ liệu <b>{symbol}</b> từ Binance, thử lại sau!")
+                return
+        else:
+            cg_id = COINGECKO_IDS.get(symbol.upper())
+            if not cg_id:
+                send(chat_id, f"❌ Không hỗ trợ symbol <b>{symbol}</b>")
+                return
+            url    = "https://api.coingecko.com/api/v3/simple/price"
+            params = {
+                "ids": cg_id,
+                "vs_currencies": "usd",
+                "include_24hr_change": "true",
+                "include_24hr_high": "true",
+                "include_24hr_low": "true",
+            }
+            res    = requests.get(url, params=params, timeout=8)
+            raw    = safe_json(res)
+            if not raw or cg_id not in raw:
+                send(chat_id, f"❌ Lỗi lấy dữ liệu <b>{symbol}</b>: API không phản hồi (có thể bị rate-limit, thử lại sau 30s)")
+                return
+            data   = raw[cg_id]
+            price  = float(data["usd"])
+            change = float(data.get("usd_24h_change", 0))
+
+        emoji = "📈" if change >= 0 else "📉"
+        sign  = "+" if change >= 0 else ""
         send(chat_id,
              f"{emoji} <b>{name}/USDT</b>\n"
              f"Giá: <b>${price:,.4f}</b>\n"
