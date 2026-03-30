@@ -5,8 +5,8 @@ import json
 import os
 from datetime import datetime
 
-BOT_TOKEN = "8737549117:AAF1_Ch3yoxMhSm-eHrpg2KSZQDQiCAMJhQ"
-CHAT_ID   = "988502675"
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHAT_ID   = os.environ.get("CHAT_ID")
 
 ALERTS_FILE = "alerts.json"
 
