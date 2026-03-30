@@ -51,8 +51,24 @@ COINGECKO_IDS = {
     "VETUSDT":  "vechain",
 }
 
-# Coins không có trên CoinGecko free → dùng Binance API
+# Coins không có trên CoinGecko free → dùng Binance/Hyperliquid API
 BINANCE_ONLY = {"HYPEUSDT"}
+
+# USDT.D alerts lưu riêng (không phải coin price)
+USDTD_ALERTS_FILE = "usdtd_alerts.json"
+
+def load_usdtd_alerts():
+    if os.path.exists(USDTD_ALERTS_FILE):
+        with open(USDTD_ALERTS_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+def save_usdtd_alerts(data):
+    with open(USDTD_ALERTS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+usdtd_alerts    = load_usdtd_alerts()
+usdtd_triggered = set()
 
 REPORT_COINS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT",
@@ -112,19 +128,51 @@ def safe_json(res):
         return None
 
 def get_price_binance(symbol):
-    """Lấy giá từ Binance Futures public API (dành cho perpetual contract)."""
+    """Lấy giá HYPE từ Hyperliquid API (chính chủ, luôn có giá).
+    Fallback: Binance Futures → Binance Spot."""
+    sym = symbol.upper()
+
+    # 1. Hyperliquid API (nguồn chính xác nhất cho HYPE)
     try:
-        url  = "https://fapi.binance.com/fapi/v1/ticker/24hr"
-        res  = requests.get(url, params={"symbol": symbol.upper()}, timeout=8)
+        res  = requests.post(
+            "https://api.hyperliquid.xyz/info",
+            json={"type": "metaAndAssetCtxs"},
+            timeout=8
+        )
         data = safe_json(res)
-        if not data or "lastPrice" not in data:
-            return None, None
-        price  = float(data["lastPrice"])
-        change = float(data.get("priceChangePercent", 0))
-        return price, change
+        if data and isinstance(data, list) and len(data) >= 2:
+            universe = data[0].get("universe", [])
+            ctxs     = data[1]
+            for i, asset in enumerate(universe):
+                if asset.get("name", "").upper() == "HYPE":
+                    price = float(ctxs[i].get("markPx", 0))
+                    if price > 0:
+                        print(f"✅ HYPE price from Hyperliquid: {price}")
+                        return price, None   # Hyperliquid không có 24h change dễ lấy
     except Exception as e:
-        print(f"⚠️ Binance Futures API error ({symbol}): {e}")
-        return None, None
+        print(f"⚠️ Hyperliquid API error: {e}")
+
+    # 2. Binance Futures fallback
+    try:
+        res  = requests.get("https://fapi.binance.com/fapi/v1/ticker/24hr",
+                            params={"symbol": sym}, timeout=8)
+        data = safe_json(res)
+        if data and "lastPrice" in data:
+            return float(data["lastPrice"]), float(data.get("priceChangePercent", 0))
+    except Exception as e:
+        print(f"⚠️ Binance Futures fallback error: {e}")
+
+    # 3. Binance Spot fallback
+    try:
+        res  = requests.get("https://api.binance.com/api/v3/ticker/24hr",
+                            params={"symbol": sym}, timeout=8)
+        data = safe_json(res)
+        if data and "lastPrice" in data:
+            return float(data["lastPrice"]), float(data.get("priceChangePercent", 0))
+    except Exception as e:
+        print(f"⚠️ Binance Spot fallback error: {e}")
+
+    return None, None
 
 def get_coin_data(symbol):
     cg_id = COINGECKO_IDS.get(symbol.upper())
@@ -329,6 +377,7 @@ MAIN_KEYBOARD = {
         [{"text": "💰 Xem giá"}, {"text": "🔔 Đặt Alert"}],
         [{"text": "📋 Danh sách Alert"}, {"text": "🗑 Xoá Alert"}],
         [{"text": "📊 Báo cáo thị trường"}, {"text": "💵 USDT.D"}],
+        [{"text": "🎯 Alert USDT.D"}, {"text": "📋 Alert USDT.D List"}],
     ],
     "resize_keyboard": True,
     "persistent": True
@@ -395,6 +444,47 @@ def handle_message(chat_id, text):
 
     if text == "💵 USDT.D":
         send_usdt_dominance(chat_id)
+        return
+
+    # ── USDT.D Alert ──
+    if text in ["🎯 Alert USDT.D", "/alertusdtd"]:
+        dom, _ = get_usdt_dominance()
+        dom_str = f" (hiện tại: {dom}%)" if dom else ""
+        send(chat_id,
+             f"🎯 <b>Đặt Alert USDT.D</b>{dom_str}\n\n"
+             f"Nhập ngưỡng % muốn cảnh báo\n"
+             f"Ví dụ: <b>5.5</b> (above) hoặc <b>4.8</b> (below)")
+        user_state[chat_id] = {"step": "usdtd_wait_value"}
+        return
+
+    if text in ["📋 Alert USDT.D List", "/listusdtd"]:
+        if not usdtd_alerts:
+            send(chat_id, "📭 Chưa có USDT.D alert nào!", reply_markup=MAIN_KEYBOARD)
+            return
+        msg = "📋 <b>USDT.D Alerts:</b>\n\n"
+        for i, a in enumerate(usdtd_alerts):
+            emoji = "📈" if a["condition"] == "above" else "📉"
+            msg += f"{i+1}. {emoji} USDT.D {a['condition'].upper()} {a['value']}%\n"
+        msg += f"\nGõ /delusdtd [số] để xoá"
+        send(chat_id, msg, reply_markup=MAIN_KEYBOARD)
+        return
+
+    if text.lower().startswith("/delusdtd"):
+        parts = text.split()
+        if len(parts) < 2:
+            send(chat_id, "💡 Dùng: /delusdtd 1")
+            return
+        try:
+            idx = int(parts[1]) - 1
+            if 0 <= idx < len(usdtd_alerts):
+                removed = usdtd_alerts.pop(idx)
+                save_usdtd_alerts(usdtd_alerts)
+                send(chat_id, f"✅ Đã xoá: USDT.D {removed['condition'].upper()} {removed['value']}%",
+                     reply_markup=MAIN_KEYBOARD)
+            else:
+                send(chat_id, "❌ Số không hợp lệ!")
+        except:
+            send(chat_id, "❌ Vui lòng nhập số!")
         return
 
     # ── /report ──
@@ -482,6 +572,21 @@ def handle_message(chat_id, text):
         user_state[chat_id] = {}
         return
 
+    if state.get("step") == "usdtd_wait_value":
+        try:
+            value = float(text.replace(",", "."))
+            user_state[chat_id]["usdtd_value"] = value
+            user_state[chat_id]["step"] = "usdtd_wait_condition"
+            send(chat_id,
+                 f"📊 Ngưỡng <b>{value}%</b>\n\nBáo khi USDT.D:",
+                 reply_markup={"inline_keyboard": [[
+                     {"text": "📈 Above (vượt lên)", "callback_data": f"usdtd_above_{value}"},
+                     {"text": "📉 Below (rớt xuống)", "callback_data": f"usdtd_below_{value}"}
+                 ]]})
+        except:
+            send(chat_id, "❌ Vui lòng nhập số hợp lệ! Ví dụ: 5.5")
+        return
+
     if state.get("step") == "wait_price":
         try:
             price = float(text.replace(",", ""))
@@ -505,6 +610,21 @@ def handle_callback(chat_id, callback_id, data):
                   json={"callback_query_id": callback_id})
 
     state = user_state.get(chat_id, {})
+
+    if data.startswith("usdtd_"):
+        parts     = data.split("_")   # ["usdtd", "above"/"below", "value"]
+        condition = parts[1]
+        value     = float(parts[2])
+        usdtd_alerts.append({"condition": condition, "value": value})
+        save_usdtd_alerts(usdtd_alerts)
+        emoji = "📈" if condition == "above" else "📉"
+        send(chat_id,
+             f"{emoji} <b>USDT.D Alert đã đặt!</b>\n\n"
+             f"Báo khi USDT.D <b>{condition.upper()} {value}%</b>\n\n"
+             f"📊 <a href='https://www.tradingview.com/chart/?symbol=CRYPTOCAP:USDT.D'>Xem chart USDT.D</a>",
+             reply_markup=MAIN_KEYBOARD)
+        user_state[chat_id] = {}
+        return
 
     if data.startswith("sym_"):
         symbol = data.replace("sym_", "")
@@ -539,6 +659,7 @@ def handle_callback(chat_id, callback_id, data):
 # ── Price checker ───────────────────────────────────────────────
 def price_checker():
     while True:
+        # Check coin alerts
         for alert in alerts[:]:
             key = f"{alert['symbol']}_{alert['condition']}_{alert['price']}"
             try:
@@ -564,7 +685,32 @@ def price_checker():
                     triggered.discard(key)
             except Exception as e:
                 print(f"⚠️ Lỗi check giá: {e}")
-        time.sleep(60)  # CoinGecko free API: giới hạn request, check mỗi 60s
+
+        # Check USDT.D alerts
+        if usdtd_alerts:
+            try:
+                dom, _ = get_usdt_dominance()
+                if dom is not None:
+                    for a in usdtd_alerts:
+                        key = f"usdtd_{a['condition']}_{a['value']}"
+                        hit = (a["condition"] == "above" and dom >= a["value"]) or \
+                              (a["condition"] == "below" and dom <= a["value"])
+                        if hit and key not in usdtd_triggered:
+                            emoji = "📈" if a["condition"] == "above" else "📉"
+                            send(CHAT_ID,
+                                 f"🚨 <b>USDT.D ALERT!</b>\n\n"
+                                 f"{emoji} USDT Dominance hiện tại: <b>{dom}%</b>\n"
+                                 f"Điều kiện: {a['condition'].upper()} {a['value']}%\n\n"
+                                 f"💡 Xem xét lại vị thế BTC/altcoin!\n"
+                                 f"📊 <a href='https://www.tradingview.com/chart/?symbol=CRYPTOCAP:USDT.D'>Xem chart USDT.D</a>")
+                            usdtd_triggered.add(key)
+                            print(f"📨 USDT.D alert: {key} (dom={dom}%)")
+                        elif not hit and key in usdtd_triggered:
+                            usdtd_triggered.discard(key)
+            except Exception as e:
+                print(f"⚠️ Lỗi check USDT.D: {e}")
+
+        time.sleep(60)
 
 # ── Main ────────────────────────────────────────────────────────
 def main():
