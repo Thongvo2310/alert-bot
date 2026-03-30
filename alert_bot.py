@@ -5,21 +5,18 @@ import json
 import os
 from datetime import datetime
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHAT_ID   = os.environ.get("CHAT_ID")
+BOT_TOKEN = "TOKEN_CỦA_BẠN"
+CHAT_ID   = "CHAT_ID_CỦA_BẠN"
 
 ALERTS_FILE = "alerts.json"
 
-# ── Giờ báo cáo sáng (24h format) ──────────────────────────────
 REPORT_HOUR   = 9
 REPORT_MINUTE = 0
 
-# ── Coin hiển thị trong báo cáo sáng ───────────────────────────
 REPORT_COINS = [
-    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "HYPEUSDT"
 ]
 
-# ── Danh sách symbol Binance phổ biến ──────────────────────────
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
     "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "MATICUSDT",
@@ -28,10 +25,21 @@ SYMBOLS = [
     "MANAUSDT", "AXSUSDT", "FTMUSDT", "ALGOUSDT", "VETUSDT",
     "ICPUSDT", "THETAUSDT", "EGLDUSDT", "FLOWUSDT", "XTZUSDT",
     "TRXUSDT", "SHIBUSDT", "PEPEUSDT", "WIFUSDT", "BONKUSDT",
-    "SUIUSDT", "APTUSDT", "ARBUSDT", "OPUSDT", "INJUSDT",
+    "SUIUSDT", "APTUSDT", "ARBUSDT", "OPUSDT", "INJUSDT", "HYPEUSDT",
 ]
 
-# ── Lưu/tải alerts ─────────────────────────────────────────────
+SHORT_NAME = {
+    "btc": "BTCUSDT", "eth": "ETHUSDT", "bnb": "BNBUSDT",
+    "sol": "SOLUSDT", "xrp": "XRPUSDT", "doge": "DOGEUSDT",
+    "ada": "ADAUSDT", "avax": "AVAXUSDT", "dot": "DOTUSDT",
+    "matic": "MATICUSDT", "link": "LINKUSDT", "ltc": "LTCUSDT",
+    "uni": "UNIUSDT", "atom": "ATOMUSDT", "trx": "TRXUSDT",
+    "shib": "SHIBUSDT", "pepe": "PEPEUSDT", "sui": "SUIUSDT",
+    "apt": "APTUSDT", "arb": "ARBUSDT", "op": "OPUSDT",
+    "inj": "INJUSDT", "near": "NEARUSDT", "hype": "HYPEUSDT",
+    "wif": "WIFUSDT", "bonk": "BONKUSDT",
+}
+
 def load_alerts():
     if os.path.exists(ALERTS_FILE):
         with open(ALERTS_FILE, "r") as f:
@@ -42,29 +50,88 @@ def save_alerts(alerts):
     with open(ALERTS_FILE, "w") as f:
         json.dump(alerts, f, indent=2)
 
-alerts = load_alerts()
-triggered = set()
+alerts     = load_alerts()
+triggered  = set()
 user_state = {}
 
-# ── Binance API ─────────────────────────────────────────────────
 def get_price(symbol):
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol.upper()}"
-    res = requests.get(url, timeout=5)
+    url  = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol.upper()}"
+    res  = requests.get(url, timeout=5)
     data = res.json()
-    if "price" in data:
-        return float(data["price"])
-    return None
+    return float(data["price"]) if "price" in data else None
 
 def get_ticker_24h(symbol):
     url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol.upper()}"
     res = requests.get(url, timeout=5)
     return res.json()
 
-# ── Gửi báo cáo sáng ───────────────────────────────────────────
+def get_usdt_dominance():
+    try:
+        url = "https://api.coingecko.com/api/v3/global"
+        res = requests.get(url, timeout=8)
+        data = res.json()
+        dom        = data["data"]["market_cap_percentage"].get("usdt", 0)
+        total_mcap = data["data"]["total_market_cap"].get("usd", 0)
+        return round(dom, 2), total_mcap
+    except:
+        return None, None
+
+def chart_link(symbol):
+    base = symbol.replace("USDT", "")
+    return f"https://www.tradingview.com/chart/?symbol=BINANCE:{base}USDT"
+
+def resolve_symbol(text):
+    t = text.strip().lower().replace("/", "").replace("-", "")
+    if t in SHORT_NAME:
+        return SHORT_NAME[t]
+    full = t.upper()
+    if not full.endswith("USDT"):
+        full += "USDT"
+    return full
+
+def send_price_info(chat_id, symbol):
+    try:
+        data   = get_ticker_24h(symbol)
+        price  = float(data["lastPrice"])
+        change = float(data["priceChangePercent"])
+        high   = float(data["highPrice"])
+        low    = float(data["lowPrice"])
+        emoji  = "📈" if change >= 0 else "📉"
+        sign   = "+" if change >= 0 else ""
+        name   = symbol.replace("USDT", "")
+        link   = chart_link(symbol)
+        send(chat_id,
+             f"{emoji} <b>{name}/USDT</b>\n"
+             f"Giá: <b>${price:,.4f}</b>\n"
+             f"24h: {sign}{change:.2f}%\n"
+             f"High: ${high:,.4f} | Low: ${low:,.4f}\n"
+             f"📊 <a href='{link}'>Xem chart TradingView</a>")
+    except:
+        send(chat_id, f"❌ Không tìm thấy symbol <b>{symbol}</b>")
+
+def send_usdt_dominance(chat_id):
+    send(chat_id, "⏳ Đang lấy dữ liệu USDT Dominance...")
+    dom, total_mcap = get_usdt_dominance()
+    if dom is None:
+        send(chat_id, "❌ Lỗi lấy dữ liệu USDT Dominance!")
+        return
+    total_str = f"${total_mcap/1e12:.2f}T" if total_mcap else "N/A"
+    send(chat_id,
+         f"💵 <b>USDT Dominance</b>\n"
+         f"Dominance: <b>{dom}%</b>\n"
+         f"Tổng Market Cap: {total_str}\n\n"
+         f"📊 <a href='https://www.tradingview.com/chart/?symbol=CRYPTOCAP:USDT.D'>Xem chart USDT.D</a>")
+
 def send_morning_report():
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
     msg = f"🌅 <b>Báo cáo thị trường sáng {now}</b>\n"
     msg += "━━━━━━━━━━━━━━━━━━━━\n\n"
+
+    dom, total_mcap = get_usdt_dominance()
+    if dom:
+        total_str = f"${total_mcap/1e12:.2f}T" if total_mcap else ""
+        msg += (f"💵 <b><a href='https://www.tradingview.com/chart/?symbol=CRYPTOCAP:USDT.D'>USDT.D</a></b>: {dom}%"
+                f"   | Total MCap: {total_str}\n\n")
 
     for symbol in REPORT_COINS:
         try:
@@ -76,7 +143,8 @@ def send_morning_report():
             emoji  = "📈" if change >= 0 else "📉"
             sign   = "+" if change >= 0 else ""
             name   = symbol.replace("USDT", "")
-            msg += (f"{emoji} <b>{name}</b>: ${price:,.4f}\n"
+            link   = chart_link(symbol)
+            msg += (f"{emoji} <b><a href='{link}'>{name}</a></b>: ${price:,.4f}\n"
                     f"   {sign}{change:.2f}% | H: ${high:,.2f} | L: ${low:,.2f}\n\n")
         except:
             msg += f"⚠️ {symbol}: Lỗi lấy dữ liệu\n\n"
@@ -88,7 +156,6 @@ def send_morning_report():
     send(CHAT_ID, msg)
     print(f"📊 Đã gửi báo cáo sáng lúc {now}")
 
-# ── Vòng lặp báo cáo sáng ──────────────────────────────────────
 def morning_report_checker():
     sent_today = None
     while True:
@@ -101,10 +168,14 @@ def morning_report_checker():
             sent_today = today
         time.sleep(30)
 
-# ── Telegram helpers ────────────────────────────────────────────
 def send(chat_id, msg, reply_markup=None):
     url     = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": msg, "parse_mode": "HTML"}
+    payload = {
+        "chat_id": chat_id,
+        "text": msg,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     requests.post(url, json=payload)
@@ -117,7 +188,6 @@ def get_updates(offset=None):
     res = requests.get(url, params=params, timeout=15)
     return res.json().get("result", [])
 
-# ── Xử lý tin nhắn ─────────────────────────────────────────────
 def handle_message(chat_id, text):
     text  = text.strip()
     state = user_state.get(chat_id, {})
@@ -129,20 +199,20 @@ def handle_message(chat_id, text):
              "/alert — Đặt alert giá mới\n"
              "/list — Xem danh sách alert\n"
              "/delete — Xoá alert\n"
-             "/price — Xem giá hiện tại\n"
-             "/report — Xem báo cáo ngay\n"
-             "/help — Hướng dẫn")
+             "/usdtd — Xem USDT Dominance\n"
+             "/report — Báo cáo thị trường ngay\n"
+             "/help — Hướng dẫn\n\n"
+             "💡 <b>Gõ nhanh:</b> btc, eth, sol, hype... để xem giá ngay!")
         user_state[chat_id] = {}
         return
 
     if text == "/help":
         send(chat_id,
-             "📖 <b>Hướng dẫn sử dụng:</b>\n\n"
-             "1️⃣ Gõ /alert để đặt alert mới\n"
-             "2️⃣ Bot hỏi từng bước\n"
-             "3️⃣ Khi giá chạm mức đặt → Bot báo ngay!\n\n"
-             f"🌅 Báo cáo sáng tự động lúc <b>{REPORT_HOUR:02d}:{REPORT_MINUTE:02d}</b>\n"
-             "💡 Gõ /report để xem báo cáo ngay lúc này")
+             "📖 <b>Hướng dẫn:</b>\n\n"
+             "⚡ Xem giá nhanh: gõ <b>btc</b> hoặc <b>eth</b>\n"
+             "💵 USDT Dominance: gõ <b>/usdtd</b>\n"
+             "🔔 Đặt alert: gõ <b>/alert</b>\n"
+             f"🌅 Báo cáo sáng tự động lúc <b>{REPORT_HOUR:02d}:{REPORT_MINUTE:02d}</b>")
         return
 
     if text == "/report":
@@ -150,28 +220,17 @@ def handle_message(chat_id, text):
         send_morning_report()
         return
 
-    if text.startswith("/price"):
+    if text.lower() in ["/usdtd", "usdt.d", "usdtd"]:
+        send_usdt_dominance(chat_id)
+        return
+
+    if text.lower().startswith("/price"):
         parts = text.split()
         if len(parts) < 2:
-            send(chat_id, "💡 Dùng: /price BTCUSDT")
+            send(chat_id, "💡 Dùng: /price BTC hoặc /price BTCUSDT")
             return
-        symbol = parts[1].upper()
-        try:
-            data   = get_ticker_24h(symbol)
-            price  = float(data["lastPrice"])
-            change = float(data["priceChangePercent"])
-            high   = float(data["highPrice"])
-            low    = float(data["lowPrice"])
-            emoji  = "📈" if change >= 0 else "📉"
-            sign   = "+" if change >= 0 else ""
-            send(chat_id,
-                 f"{emoji} <b>{symbol}</b>\n"
-                 f"Giá: <b>${price:,.4f}</b>\n"
-                 f"24h: {sign}{change:.2f}%\n"
-                 f"High: ${high:,.4f}\n"
-                 f"Low:  ${low:,.4f}")
-        except:
-            send(chat_id, f"❌ Không tìm thấy symbol <b>{symbol}</b>")
+        symbol = resolve_symbol(parts[1])
+        send_price_info(chat_id, symbol)
         return
 
     if text == "/list":
@@ -210,7 +269,11 @@ def handle_message(chat_id, text):
         user_state[chat_id] = {"step": "wait_symbol"}
         return
 
-    # ── Các bước hội thoại ──
+    lower = text.lower().replace("/", "").replace("-", "")
+    if lower in SHORT_NAME:
+        send_price_info(chat_id, SHORT_NAME[lower])
+        return
+
     if state.get("step") == "delete":
         try:
             idx = int(text) - 1
@@ -241,7 +304,6 @@ def handle_message(chat_id, text):
 
     send(chat_id, "💡 Gõ /start để xem hướng dẫn")
 
-# ── Xử lý callback (button) ────────────────────────────────────
 def handle_callback(chat_id, callback_id, data):
     requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
                   json={"callback_query_id": callback_id})
@@ -276,7 +338,6 @@ def handle_callback(chat_id, callback_id, data):
         user_state[chat_id] = {}
         return
 
-# ── Vòng lặp kiểm tra giá ──────────────────────────────────────
 def price_checker():
     while True:
         for alert in alerts[:]:
@@ -290,10 +351,13 @@ def price_checker():
 
                 if hit and key not in triggered:
                     emoji = "📈" if alert["condition"] == "above" else "📉"
+                    link  = chart_link(alert["symbol"])
+                    name  = alert["symbol"].replace("USDT", "")
                     msg   = (f"🚨 <b>ALERT TRIGGERED!</b>\n\n"
-                             f"{emoji} <b>{alert['symbol']}</b>\n"
+                             f"{emoji} <b>{name}/USDT</b>\n"
                              f"Giá hiện tại: <b>${price:,.4f}</b>\n"
-                             f"Điều kiện: {alert['condition'].upper()} ${alert['price']:,.2f}")
+                             f"Điều kiện: {alert['condition'].upper()} ${alert['price']:,.2f}\n\n"
+                             f"📊 <a href='{link}'>Xem chart TradingView</a>")
                     send(CHAT_ID, msg)
                     triggered.add(key)
                     print(f"📨 Đã gửi alert: {key}")
@@ -303,15 +367,14 @@ def price_checker():
                 print(f"⚠️ Lỗi check giá: {e}")
         time.sleep(30)
 
-# ── Main ────────────────────────────────────────────────────────
 def main():
     print(f"✅ Bot đang chạy... Báo cáo sáng lúc {REPORT_HOUR:02d}:{REPORT_MINUTE:02d}")
     send(CHAT_ID,
          f"🤖 Bot đã khởi động!\n"
          f"🌅 Báo cáo sáng tự động lúc <b>{REPORT_HOUR:02d}:{REPORT_MINUTE:02d}</b>\n"
-         f"Gõ /start để bắt đầu")
+         f"Gõ /start để xem hướng dẫn")
 
-    threading.Thread(target=price_checker,         daemon=True).start()
+    threading.Thread(target=price_checker,          daemon=True).start()
     threading.Thread(target=morning_report_checker, daemon=True).start()
 
     offset = None
