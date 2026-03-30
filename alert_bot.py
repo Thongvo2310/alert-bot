@@ -112,9 +112,9 @@ def safe_json(res):
         return None
 
 def get_price_binance(symbol):
-    """Lấy giá từ Binance public API (không cần key)."""
+    """Lấy giá từ Binance Futures public API (dành cho perpetual contract)."""
     try:
-        url  = "https://api.binance.com/api/v3/ticker/24hr"
+        url  = "https://fapi.binance.com/fapi/v1/ticker/24hr"
         res  = requests.get(url, params={"symbol": symbol.upper()}, timeout=8)
         data = safe_json(res)
         if not data or "lastPrice" not in data:
@@ -123,7 +123,7 @@ def get_price_binance(symbol):
         change = float(data.get("priceChangePercent", 0))
         return price, change
     except Exception as e:
-        print(f"⚠️ Binance API error ({symbol}): {e}")
+        print(f"⚠️ Binance Futures API error ({symbol}): {e}")
         return None, None
 
 def get_coin_data(symbol):
