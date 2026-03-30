@@ -47,20 +47,44 @@ def safe_json(res):
         print(f"JSON parse error: {e}")
         return None
 
+CG_IDS = {"BTCUSDT": "bitcoin", "ETHUSDT": "ethereum"}
+
 def get_price_binance(symbol):
+    """Lấy giá từ Binance Spot. Fallback: CoinGecko nếu Binance bị block."""
+    sym = symbol.upper()
+
+    # 1. Binance Spot (real-time nhất)
     try:
         res  = requests.get(
             "https://api.binance.com/api/v3/ticker/24hr",
-            params={"symbol": symbol.upper()},
+            params={"symbol": sym},
             timeout=8
         )
         data = safe_json(res)
-        if not data or "lastPrice" not in data:
-            return None, None
-        return float(data["lastPrice"]), float(data.get("priceChangePercent", 0))
+        if data and "lastPrice" in data:
+            return float(data["lastPrice"]), float(data.get("priceChangePercent", 0))
     except Exception as e:
-        print(f"Binance error ({symbol}): {e}")
-        return None, None
+        print(f"Binance error ({sym}): {e}")
+
+    # 2. CoinGecko fallback
+    cg_id = CG_IDS.get(sym)
+    if cg_id:
+        try:
+            res  = requests.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": cg_id, "vs_currencies": "usd", "include_24hr_change": "true"},
+                timeout=10
+            )
+            data = safe_json(res)
+            if data and cg_id in data:
+                price  = float(data[cg_id]["usd"])
+                change = float(data[cg_id].get("usd_24h_change", 0))
+                print(f"CoinGecko fallback OK: {sym} = {price}")
+                return price, change
+        except Exception as e:
+            print(f"CoinGecko fallback error ({sym}): {e}")
+
+    return None, None
 
 def get_usdt_dominance():
     try:
