@@ -89,6 +89,25 @@ triggered  = set()
 user_state = {}
 
 # ── CoinGecko API ───────────────────────────────────────────────
+def safe_json(res):
+    """Parse JSON an toàn, trả về None nếu lỗi hoặc response rỗng."""
+    try:
+        if res.status_code == 429:
+            print(f"⚠️ CoinGecko rate-limit (429), chờ 10s...")
+            time.sleep(10)
+            return None
+        if res.status_code != 200:
+            print(f"⚠️ CoinGecko HTTP {res.status_code}")
+            return None
+        text = res.text.strip()
+        if not text:
+            print("⚠️ CoinGecko response rỗng")
+            return None
+        return res.json()
+    except Exception as e:
+        print(f"⚠️ JSON parse error: {e} | body: {res.text[:100]}")
+        return None
+
 def get_coin_data(symbol):
     cg_id = COINGECKO_IDS.get(symbol.upper())
     if not cg_id:
@@ -96,7 +115,7 @@ def get_coin_data(symbol):
     url = f"https://api.coingecko.com/api/v3/coins/{cg_id}"
     params = {"localization": "false", "tickers": "false", "community_data": "false", "developer_data": "false"}
     res  = requests.get(url, params=params, timeout=10)
-    return res.json()
+    return safe_json(res)
 
 def get_price(symbol):
     cg_id = COINGECKO_IDS.get(symbol.upper())
@@ -105,7 +124,9 @@ def get_price(symbol):
     url    = "https://api.coingecko.com/api/v3/simple/price"
     params = {"ids": cg_id, "vs_currencies": "usd"}
     res    = requests.get(url, params=params, timeout=8)
-    data   = res.json()
+    data   = safe_json(res)
+    if not data:
+        return None
     return float(data[cg_id]["usd"]) if cg_id in data else None
 
 def get_prices_batch(symbols):
@@ -121,7 +142,9 @@ def get_prices_batch(symbols):
         "include_market_cap": "false"
     }
     res  = requests.get(url, params=params, timeout=10)
-    data = res.json()
+    data = safe_json(res)
+    if not data:
+        return {}
     result = {}
     for sym in symbols:
         cg_id = COINGECKO_IDS.get(sym)
@@ -135,12 +158,15 @@ def get_prices_batch(symbols):
 def get_usdt_dominance():
     try:
         url  = "https://api.coingecko.com/api/v3/global"
-        res  = requests.get(url, timeout=8)
-        data = res.json()
+        res  = requests.get(url, timeout=10)
+        data = safe_json(res)
+        if not data:
+            return None, None
         dom        = data["data"]["market_cap_percentage"].get("usdt", 0)
         total_mcap = data["data"]["total_market_cap"].get("usd", 0)
         return round(dom, 2), total_mcap
-    except:
+    except Exception as e:
+        print(f"⚠️ Lỗi get_usdt_dominance: {e}")
         return None, None
 
 # ── TradingView link ────────────────────────────────────────────
@@ -174,7 +200,11 @@ def send_price_info(chat_id, symbol):
             "include_24hr_low": "true",
         }
         res    = requests.get(url, params=params, timeout=8)
-        data   = res.json()[cg_id]
+        raw    = safe_json(res)
+        if not raw or cg_id not in raw:
+            send(chat_id, f"❌ Lỗi lấy dữ liệu <b>{symbol}</b>: API không phản hồi (có thể bị rate-limit, thử lại sau 30s)")
+            return
+        data   = raw[cg_id]
         price  = float(data["usd"])
         change = float(data.get("usd_24h_change", 0))
         emoji  = "📈" if change >= 0 else "📉"
