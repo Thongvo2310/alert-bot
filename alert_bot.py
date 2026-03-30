@@ -87,17 +87,39 @@ def get_price_binance(symbol):
     return None, None
 
 def get_usdt_dominance():
+    """Tính USDT.D từ nhiều nguồn, ưu tiên nguồn gần với TradingView nhất."""
+
+    # 1. CoinLore - cập nhật thường xuyên hơn CoinGecko, không cần key
+    try:
+        # Lấy tổng market cap global
+        res_g = requests.get("https://api.coinlore.net/api/global/", timeout=8)
+        data_g = safe_json(res_g)
+        # Lấy market cap của USDT (id=518 trên CoinLore)
+        res_u = requests.get("https://api.coinlore.net/api/ticker/?id=518", timeout=8)
+        data_u = safe_json(res_u)
+        if data_g and data_u and isinstance(data_g, list) and isinstance(data_u, list):
+            total_mcap  = float(data_g[0].get("total_mcap", 0))
+            usdt_mcap   = float(data_u[0].get("market_cap_usd", 0))
+            if total_mcap > 0 and usdt_mcap > 0:
+                dom = round((usdt_mcap / total_mcap) * 100, 2)
+                print(f"USDT.D from CoinLore: {dom}% (usdt={usdt_mcap/1e9:.1f}B / total={total_mcap/1e9:.0f}B)")
+                return dom, total_mcap
+    except Exception as e:
+        print(f"CoinLore error: {e}")
+
+    # 2. CoinGecko fallback
     try:
         res  = requests.get("https://api.coingecko.com/api/v3/global", timeout=10)
         data = safe_json(res)
-        if not data:
-            return None, None
-        dom        = data["data"]["market_cap_percentage"].get("usdt", 0)
-        total_mcap = data["data"]["total_market_cap"].get("usd", 0)
-        return round(dom, 2), total_mcap
+        if data:
+            dom        = data["data"]["market_cap_percentage"].get("usdt", 0)
+            total_mcap = data["data"]["total_market_cap"].get("usd", 0)
+            print(f"USDT.D from CoinGecko fallback: {dom}%")
+            return round(dom, 2), total_mcap
     except Exception as e:
-        print(f"USDT.D error: {e}")
-        return None, None
+        print(f"CoinGecko error: {e}")
+
+    return None, None
 
 def chart_link(symbol):
     base = symbol.replace("USDT", "")
